@@ -65,18 +65,29 @@ ggplot(mapa) +
   geom_sf(aes(fill = tasa_mort), color = "white", size = 0.2) +
   scale_fill_viridis_c(option = "C", direction = -1,
                        name = "Tasa mortalidad (%)") +
-  labs(title = "Tasa de mortalidad en accidentes de tráfico por provincia",
-       subtitle = "España 2023",
-       caption = "Fuente: DGT, Microdatos accidentes 2023") +
   theme_minimal()
+
 
 # Fallecidos absolutos por provincia
 ggplot(mapa) +
   geom_sf(aes(fill = fallecidos), color = "white", size = 0.2) +
   scale_fill_viridis_c(option = "A", direction = -1, name = "Fallecidos") +
-  labs(title = "Fallecidos en accidentes de tráfico por provincia",
-       subtitle = "España 2023",
-       caption = "Fuente: DGT, Microdatos accidentes 2023") +
+  theme_minimal()
+
+centroides_mapa <- muni_sf %>%
+  st_centroid()
+
+# Mapa de puntos proporcionales
+ggplot() +
+  geom_sf(data = spain, fill = "grey95", color = "white", size = 0.2) +
+  geom_sf(data = centroides_mapa, 
+          aes(size = n_mortales), 
+          color = "red", alpha = 0.5) +
+  scale_size_continuous(
+    name = "Accidentes\nmortales",
+    range = c(0.5, 8),
+    breaks = c(10, 20, 30, 40)
+  ) +
   theme_minimal()
 
 # 4. FACTORES TERRITORIALES
@@ -93,9 +104,9 @@ ggplot(datos_cor, aes(x = densidad_pob, y = tasa_mort)) +
   geom_point(color = "steelblue", size = 3, alpha = 0.7) +
   geom_smooth(method = "lm", color = "red", se = TRUE) +
   scale_x_log10() +
-  labs(title = "Densidad de población vs tasa de mortalidad vial",
-       x = "Densidad (hab/km², escala log)", y = "Tasa mortalidad (%)") +
+  labs(x = "Densidad (hab/km², escala log)", y = "Tasa mortalidad (%)") +
   theme_minimal()
+
 
 # Tasa de mortalidad por tipo de vía
 tipo_via_labels <- c(
@@ -104,7 +115,8 @@ tipo_via_labels <- c(
   "5" = "Conv. doble calzada", "6" = "Conv. calzada única",
   "7" = "Vía de servicio", "8" = "Ramal enlace",
   "9" = "Calle",           "10" = "Camino vecinal",
-  "11" = "Recinto",        "14" = "Otro"
+  "11" = "Recinto",        "12" = "Vía ciclista",
+  "13" = "Senda ciclable", "14" = "Otro"
 )
 
 acc %>%
@@ -122,7 +134,6 @@ acc %>%
   geom_col() +
   scale_fill_viridis_c(option = "C", direction = -1) +
   coord_flip() +
-  labs(title = "Tasa de mortalidad por tipo de vía", x = NULL, y = "%") +
   theme_minimal()
 
 # Urbano vs interurbano
@@ -133,7 +144,6 @@ acc %>%
   ggplot(aes(x = zona_label, y = tasa, fill = zona_label)) +
   geom_col(width = 0.5) +
   scale_fill_manual(values = c("Interurbana" = "#d73027", "Urbana" = "#4575b4")) +
-  labs(title = "Tasa de mortalidad: urbana vs interurbana", x = NULL, y = "%") +
   theme_minimal() +
   theme(legend.position = "none")
 
@@ -147,8 +157,8 @@ pesos   <- nb2listw(vecinos, style = "W", zero.policy = TRUE)
 moran.test(mapa_moran$tasa_mort, pesos, zero.policy = TRUE)
 
 moran.plot(mapa_moran$tasa_mort, pesos, zero.policy = TRUE,
-           main = "Diagrama de Moran",
-           xlab = "Tasa mortalidad", ylab = "Lag")
+           xlab = "Tasa de mortalidad (estandarizada)",
+           ylab = "Retardo espacial (lag)")
 
 # Análisis LISA
 local_m <- spdep::localmoran(mapa_moran$tasa_mort, pesos, zero.policy = TRUE)
@@ -174,16 +184,9 @@ colores_lisa <- c(
 ggplot(mapa_moran) +
   geom_sf(aes(fill = lisa_cluster), color = "white", size = 0.2) +
   scale_fill_manual(values = colores_lisa, name = "Cluster LISA") +
-  labs(
-    title    = "Análisis LISA — Mortalidad vial por provincia",
-    subtitle = "Clusters locales de autocorrelación espacial (p < 0.05)",
-    caption  = "Fuente: DGT 2023 / elaboración propia"
-  ) +
-  theme_minimal() +
-  theme(plot.title = element_text(face = "bold"))
+  theme_minimal()
 
 # 6. ANÁLISIS DE PATRONES DE PUNTOS
-
 municipios <- esp_get_munic() %>%
   mutate(COD_MUNICIPIO = as.character(LAU_CODE))
 
@@ -200,7 +203,7 @@ centroides_t <- st_transform(st_centroid(muni_sf), 25830)
 coords_t     <- st_coordinates(centroides_t)
 spain_t      <- st_transform(st_union(spain), 25830)
 window       <- as.owin(c(st_bbox(spain_t)[1], st_bbox(spain_t)[3],
-                           st_bbox(spain_t)[2], st_bbox(spain_t)[4]))
+                          st_bbox(spain_t)[2], st_bbox(spain_t)[4]))
 
 ppp_mortales <- ppp(x = coords_t[, 1], y = coords_t[, 2],
                     window = window, marks = muni_sf$n_mortales)
@@ -209,14 +212,36 @@ ppp_mortales <- ppp(x = coords_t[, 1], y = coords_t[, 2],
 q_test <- quadrat.test(unmark(ppp_mortales), nx = 5, ny = 5)
 print(q_test)
 
-# Entornos de confianza (función G)
+# Entornos mortales
 env_mort <- envelope(unmark(ppp_mortales), fun = Gest,
                      nsim = 99, nrank = 2, verbose = FALSE)
 
-par(mfrow = c(1, 2), mar = c(4, 4, 3, 1))
+# No mortales
+no_mortales_muni <- acc %>%
+  filter(TOTAL_MU30DF == 0, !is.na(COD_MUNICIPIO), COD_MUNICIPIO != "00000") %>%
+  group_by(COD_MUNICIPIO) %>%
+  summarise(n_no_mortales = n())
+
+muni_sf_no_mort <- municipios %>%
+  left_join(no_mortales_muni, by = "COD_MUNICIPIO") %>%
+  filter(!is.na(n_no_mortales))
+
+centroides_no_mort <- st_transform(st_centroid(muni_sf_no_mort), 25830)
+coords_no_mort <- st_coordinates(centroides_no_mort)
+
+ppp_no_mortales <- ppp(x = coords_no_mort[, 1], y = coords_no_mort[, 2],
+                       window = window)
+
+env_no_mort <- envelope(ppp_no_mortales, fun = Gest,
+                        nsim = 99, nrank = 2, verbose = FALSE)
+
+# Exportar los dos juntos
+png("figura4_entornos_confianza.png", width = 3000, height = 1500, res = 300)
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 1))
 plot(env_mort, main = "Mortales")
-# Nota: generar env_no_mort con el subconjunto de no mortales para el segundo panel
+plot(env_no_mort, main = "No mortales")
 par(mfrow = c(1, 1))
+dev.off()
 
 # 7. ANÁLISIS TEMPORAL
 
@@ -229,12 +254,10 @@ acc %>%
   ggplot(aes(x = mes_label, y = fallecidos, group = 1)) +
   geom_line(color = "red", size = 1.2) +
   geom_point(color = "red", size = 3) +
-  labs(title = "Evolución mensual de fallecidos",
-       subtitle = "España 2023",
-       x = NULL, y = "Fallecidos") +
+  labs(x = NULL, y = "Fallecidos") +
   theme_minimal()
 
-# 8. ZOOM: COMUNITAT VALENCIANA
+# 8. CASO DE USO: COMUNITAT VALENCIANA
 
 acc %>%
   filter(COD_PROVINCIA %in% c(3, 12, 46)) %>%
@@ -247,7 +270,54 @@ acc %>%
   ggplot() +
   geom_sf(aes(fill = tasa_mort), color = "white") +
   scale_fill_viridis_c(option = "C", direction = -1, name = "Tasa (%)") +
-  labs(title = "Mortalidad vial — Comunitat Valenciana",
-       subtitle = "Por provincia, España 2023",
-       caption = "Fuente: DGT") +
   theme_minimal()
+
+# 1. Top 5 provincias por tasa
+por_prov %>% arrange(desc(tasa_mort)) %>% head(5)
+
+# 2. Por tipo de vía
+acc %>%
+  group_by(TIPO_VIA) %>%
+  summarise(
+    accidentes = n(),
+    fallecidos = sum(TOTAL_MU30DF, na.rm = TRUE),
+    tasa = fallecidos / accidentes * 100
+  ) %>%
+  arrange(desc(tasa))
+
+# 3. Urbana vs interurbana
+acc %>%
+  mutate(zona_label = if_else(ZONA_AGRUPADA == 1, "Interurbana", "Urbana")) %>%
+  group_by(zona_label) %>%
+  summarise(
+    accidentes = n(),
+    fallecidos = sum(TOTAL_MU30DF, na.rm = TRUE),
+    tasa = fallecidos / accidentes * 100
+  )
+
+# 4. Mensual
+acc %>%
+  group_by(MES) %>%
+  summarise(fallecidos = sum(TOTAL_MU30DF, na.rm = TRUE))
+
+# 5. Comunitat Valenciana
+acc %>%
+  filter(COD_PROVINCIA %in% c(3, 12, 46)) %>%
+  group_by(COD_PROVINCIA) %>%
+  summarise(
+    accidentes = n(),
+    fallecidos = sum(TOTAL_MU30DF, na.rm = TRUE),
+    tasa = sum(TOTAL_MU30DF > 0) / n() * 100
+  )
+
+# Desglose fallecidos por tipo de usuario
+acc %>%
+  summarise(
+    peatones    = sum(TOT_PEAT_MU30DF, na.rm = TRUE),
+    ciclistas   = sum(TOT_BICI_MU30DF, na.rm = TRUE),
+    ciclomotor  = sum(TOT_CICLO_MU30DF, na.rm = TRUE),
+    motoristas  = sum(TOT_MOTO_MU30DF, na.rm = TRUE),
+    turismos    = sum(TOT_TUR_MU30DF, na.rm = TRUE),
+    furgonetas  = sum(TOT_FURG_MU30DF, na.rm = TRUE),
+    camiones    = sum(TOT_CAM_MAS3500_MU30DF, na.rm = TRUE)
+  )
